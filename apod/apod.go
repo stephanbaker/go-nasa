@@ -6,9 +6,14 @@ package apod
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -28,26 +33,26 @@ type APOD struct {
 const DefaultAPIURL = "https://api.nasa.gov/planetary/apod"
 
 //DefaultAPIKey represents the default API key for this APOD API
-const DefaultAPIKey = "DEMO_KEY"
+const DefaultAPIKey = "rtgkG6UUPtPgOO7Zk9UfDQeE0WJEhT21EnhEqMKW" //"DEMO_KEY"
 
 //DefaultRequestHD represents the default for whether or not to request hd urls
 const DefaultRequestHD = true
 
 //GetEntryForToday queries the NASA APOD API and returns the today's entry.
-func GetEntryForToday() (*APOD, error) {
-	return GetEntry(DefaultAPIURL, time.Now(), DefaultRequestHD, DefaultAPIKey)
+func GetEntryForToday(apiKey string) (*APOD, error) {
+	return GetEntry(apiKey, DefaultAPIURL, time.Now(), DefaultRequestHD)
 }
 
 //GetEntryForDate queries the NASA APOD API and returns the result for the given
 //parameters.  This function expects the date of the entry to be provided.
-func GetEntryForDate(date time.Time) (*APOD, error) {
-	return GetEntry(DefaultAPIURL, date, DefaultRequestHD, DefaultAPIKey)
+func GetEntryForDate(apiKey string, date time.Time) (*APOD, error) {
+	return GetEntry(apiKey, DefaultAPIURL, date, DefaultRequestHD)
 }
 
 //GetEntry queries the NASA APOD API and returns the result for the given
 //parameters.  This function expects the api url, date of the entry, whether or not to provide
 //the high-defenition URL for entry, and the API key to be used for the request.
-func GetEntry(apiurl string, date time.Time, hd bool, apikey string) (*APOD, error) {
+func GetEntry(apikey string, apiurl string, date time.Time, hd bool) (*APOD, error) {
 	//Get our base url
 	apodURL, err := url.Parse(apiurl)
 	if err != nil {
@@ -96,4 +101,60 @@ func GetEntry(apiurl string, date time.Time, hd bool, apikey string) (*APOD, err
 	}
 
 	return apod, err
+}
+
+//DownloadAPOD checks the provided APOD struct, and if possible downloads the
+//contents of the picture and saves it to the designated destination path.
+func DownloadAPOD(apod *APOD, destinationPath string, hd bool) (written int64, err error) {
+	if apod == nil {
+		return 0, errors.New("You must provide an apod entry.")
+	}
+	//Verify we are handling an image entry
+	if apod.MediaType != "image" {
+		return 0, errors.New("DownloadAPOD will only work for APOD entries with media_type=\"image\".")
+	}
+
+	//Determine the appropriate image url
+	var imageURL string
+	if hd && len(apod.HDURL) > 0 {
+		imageURL = apod.HDURL
+	} else if len(apod.URL) > 0 {
+		imageURL = apod.URL
+	} else {
+		return 0, errors.New("No image url was provided for this APOD entry.")
+	}
+
+	//Parse the image name from the url
+	tokens := strings.Split(imageURL, "/")
+	fileName := tokens[len(tokens)-1]
+
+	//Create the directory if it does not exist
+	if _, err := os.Stat(destinationPath); err != nil {
+		if err := os.MkdirAll(destinationPath, 0744); err != nil {
+			return 0, errors.New("Unable to write to the specified file path.")
+		}
+	}
+	destinationPath = filepath.Join(destinationPath, fileName)
+
+	//Check if the destination path already exists
+	if _, err := os.Stat(destinationPath); err == nil {
+		return 0, fmt.Errorf("File already exists at path %s.", destinationPath)
+	}
+
+	resp, err := http.Get(imageURL)
+	if err != nil {
+		return 0, fmt.Errorf("Unable to get file at url %s. %s", imageURL, err.Error())
+	}
+	defer resp.Body.Close()
+
+	file, err := os.Create(destinationPath)
+	if err != nil {
+		return 0, fmt.Errorf("Unable to open destination file at path %s.  %s", destinationPath, err.Error())
+	}
+	written, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("Unable to write contents of file to path %s.  %s", destinationPath, err.Error())
+	}
+
+	return written, nil
 }
